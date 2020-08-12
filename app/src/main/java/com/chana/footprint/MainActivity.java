@@ -1,48 +1,52 @@
 package com.chana.footprint;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
-import android.Manifest;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
+import android.graphics.drawable.Drawable;
+import android.net.Uri;
+import android.os.AsyncTask;
 import android.os.Bundle;
-import android.provider.MediaStore;
+import android.text.Layout;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.GridView;
-import android.widget.RelativeLayout;
+import android.widget.ImageView;
+import android.widget.TextView;
 import android.widget.Toast;
 
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.bumptech.glide.request.target.CustomTarget;
+import com.bumptech.glide.request.target.SimpleTarget;
+import com.bumptech.glide.request.transition.Transition;
+import com.chana.footprint.data.AmazonS3Util;
 import com.chana.footprint.data.GPSTracker;
-import com.chana.footprint.data.GridAdapter;
 import com.chana.footprint.data.PlaceItem;
-import com.chana.footprint.data.PreferenceManager;
 import com.chana.footprint.data.StaticPlaceItemList;
 import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
-import com.google.android.gms.maps.MapFragment;
 import com.google.android.gms.maps.OnMapReadyCallback;
 import com.google.android.gms.maps.SupportMapFragment;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
-import com.gun0912.tedpermission.PermissionListener;
-import com.gun0912.tedpermission.TedPermission;
 import com.sothree.slidinguppanel.SlidingUpPanelLayout;
 
-import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
+import java.util.SimpleTimeZone;
+import java.util.concurrent.ExecutionException;
 
 public class MainActivity extends AppCompatActivity implements OnMapReadyCallback {
 
@@ -51,19 +55,16 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     private EditText et_name, et_feel;
     private SlidingUpPanelLayout mainPanel;
     long backKeyPressedTime = 0;
-    private GridView gv_image;
     private GPSTracker gpsTracker;
-    private ArrayList<MarkerOptions> markerOptions = new ArrayList<>();
-    ArrayList<Bitmap> images;
-    GridAdapter adapter;
+    private ArrayList<Marker> markers = new ArrayList<>();
     Context mContext;
+    Bitmap bitmap;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         mContext = this;
-        images = new ArrayList<>();
 
         mapFragment = (SupportMapFragment)getSupportFragmentManager()
                 .findFragmentById(R.id.fragment_map);
@@ -71,7 +72,6 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
-        images.add(0, BitmapFactory.decodeResource(getApplicationContext().getResources(), R.drawable.cam));
 
         setContentViews();
     }
@@ -79,6 +79,8 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     @Override
     public void onMapReady(GoogleMap googleMap) {
         gpsTracker = new GPSTracker(this);
+        markers.clear();
+        googleMap.clear();
         LatLng current = new LatLng(gpsTracker.getLatitude(), gpsTracker.getLongitude());
 
         for(PlaceItem item : StaticPlaceItemList.placeItems){
@@ -93,31 +95,73 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             }
             options.snippet(feel);
             options.position(position);
-            googleMap.addMarker(options);
-            markerOptions.add(options);
+            markers.add(googleMap.addMarker(options));
         }
         googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(current,11));
+        googleMap.setOnInfoWindowClickListener(marker -> {
+            int index = markers.indexOf(marker);
+            PlaceItem item = StaticPlaceItemList.placeItems.get(index);
+            Intent intent = new Intent(MainActivity.this, ListActivity.class);
+            intent.putExtra("item",item);
+            startActivity(intent);
+        });
 
+        googleMap.setOnMarkerClickListener(marker -> {
+            bitmap = null;
+            marker.showInfoWindow();
+            int index = markers.indexOf(marker);
+            PlaceItem item = StaticPlaceItemList.placeItems.get(index);
+            String id = item.getId();
+            Glide.with(getApplicationContext()).asBitmap()
+                    .load(Uri.parse(AmazonS3Util.getDownloadUrl(getApplicationContext(), id) + id + "_" + 0))
+                    .skipMemoryCache(true)
+                    .diskCacheStrategy(DiskCacheStrategy.NONE)
+                    .into(new CustomTarget<Bitmap>() {
+                        @Override
+                        public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
+                            bitmap = resource;
+                            marker.showInfoWindow();
+                        }
+                        @Override
+                        public void onLoadCleared(@Nullable Drawable placeholder) {
+                        }
+                    });
+            return true;
+        });
+
+        googleMap.setInfoWindowAdapter(new GoogleMap.InfoWindowAdapter() {
+            @Override
+            public View getInfoWindow(Marker marker) {
+                return null;
+            }
+
+            @Override
+            public View getInfoContents(Marker marker) { // 여기가 인포윈도우 커스텀 하는건데, 보면은
+                View view = getLayoutInflater().inflate(R.layout.marker_layout, null); // 레이아웃 인플레이터 <- 이걸로 커스텀
+                int index = markers.indexOf(marker);
+                PlaceItem item = StaticPlaceItemList.placeItems.get(index);
+                TextView title = view.findViewById(R.id.tv_snippet_title); // 여기서 설정하면 될듯?
+                TextView feel = view.findViewById(R.id.tv_snippet_feel);
+                ImageView imageView = view.findViewById(R.id.iv_snippet);
+                title.setText(item.getPlaceName());
+                feel.setText(item.getPlaceFeel());
+                if(bitmap!= null) {
+                    imageView.setImageBitmap(bitmap);
+                    imageView.getLayoutParams().height=imageView.getLayoutParams().width;
+                }
+                return view;
+            }
+        });
     }
 
     public void setContentViews(){
         mainPanel = findViewById(R.id.main_panel);
         mainPanel.setPanelState(SlidingUpPanelLayout.PanelState.COLLAPSED);
-        gv_image = findViewById(R.id.gv_image);
         btn_list = findViewById(R.id.btn_list);
         btn_stamp = findViewById(R.id.btn_stamp);
         et_feel = findViewById(R.id.et_placeFeel);
         et_name = findViewById(R.id.et_placeName);
 
-        adapter = new GridAdapter(this,images,true);
-        adapter.setListener(v -> {
-            if(images.size()>=3){
-                Toast.makeText(this, "사진은 최대 3장까지 올릴 수 있어요", Toast.LENGTH_SHORT).show();
-            } else {
-                tedPermission();
-            }
-        });
-//        gv_image.setAdapter(adapter); 아직 이미지는 서버 개발 필요
 
         btn_list.setOnClickListener(v -> {
             Intent intent = new Intent(MainActivity.this, ListActivity.class);
@@ -136,9 +180,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
                 }
                 else {
-                    images.clear();
-                    images.add(0, BitmapFactory.decodeResource(getApplicationContext().getResources(), R.drawable.cam));
-                    adapter.notifyDataSetChanged();
+
                 }
             }
         });
@@ -159,7 +201,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             }
 
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
-            builder.setMessage("장소를 남기시겠어요?");
+            builder.setMessage("추억을 남기시겠어요?");
             builder.setPositiveButton("네", new DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(DialogInterface dialog, int which) {
@@ -172,10 +214,8 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                     item.setPlaceFeel(placeFeel);
                     item.setLatitude(gpsTracker.getLatitude());
                     item.setLongitude(gpsTracker.getLongitude());
-                    images.remove(0);
-                    item.setImages(images);
-                    StaticPlaceItemList.addPlace(getApplicationContext(),item);
                     item.onBindSharedPreference(getApplicationContext());
+                    StaticPlaceItemList.loadPlaceItems(getApplicationContext());
                     //이미지
                     mainPanel.setPanelState(SlidingUpPanelLayout.PanelState.COLLAPSED);
                     mapFragment.getMapAsync((MainActivity)mContext);
@@ -190,55 +230,6 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         Date date = new Date(System.currentTimeMillis());
         @SuppressLint("SimpleDateFormat") SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm");
         return format.format(date);
-    }
-
-    public void tedPermission(){
-        PermissionListener permissionListener = new PermissionListener() {
-            @Override
-            public void onPermissionGranted() {
-                Intent intent = new Intent();
-                intent.setType(MediaStore.Images.Media.CONTENT_TYPE);
-                intent.setAction(Intent.ACTION_PICK);
-                startActivityForResult(intent, 0);
-            }
-
-            @Override
-            public void onPermissionDenied(List<String> deniedPermissions) {
-                Toast.makeText(getApplicationContext(),"권한이 거부되어 있어요",Toast.LENGTH_SHORT).show();
-            }
-        };
-
-        TedPermission.with(this)
-                .setPermissionListener(permissionListener)
-                .setRationaleMessage("사진을 업로드하기 위하여 권한이 필요합니다.")
-                .setDeniedMessage("[설정] > [권한] 에서 권한을 허용할 수 있습니다")
-                .setPermissions(Manifest.permission.READ_EXTERNAL_STORAGE,Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                .check();
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        try {
-            if (requestCode == 0) {
-                if (resultCode == RESULT_OK) {
-
-                    InputStream in = getContentResolver().openInputStream(data.getData());
-
-                    Bitmap img = BitmapFactory.decodeStream(in);
-                    in.close();
-                    images.add(img);
-                    adapter.notifyDataSetChanged();
-
-                    Toast.makeText(this, "사진 업로드 완료", Toast.LENGTH_SHORT).show();
-
-                } else if (resultCode == RESULT_CANCELED) {
-                    Toast.makeText(this, "사진 선택 취소", Toast.LENGTH_LONG).show();
-                }
-            }
-        } catch (Exception e){
-            e.printStackTrace();
-        }
     }
 
     @Override
@@ -263,5 +254,11 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                 this.finishAffinity();
             }
         }
+    }
+
+    @Override
+    protected void onPostResume() {
+        super.onPostResume();
+        mapFragment.getMapAsync(this);
     }
 }
