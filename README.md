@@ -5,4 +5,4 @@ FootPrint Application Designed by younjeong
 * Sliding Panel Layout
 * SharedPreference
 
-https://www.youtube.com/watch?v=oU8-EiFkAs8
+https://www.youtube.com/watch?v=m-h2F6aQGJ4
